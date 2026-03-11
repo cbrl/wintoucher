@@ -1,8 +1,8 @@
 from dataclasses import dataclass, field
 from typing import ClassVar, Dict, Iterable, List, Optional, Type
 
-from wintoucher.data.dot import Dot, FlickDot, PressDot
-from wintoucher.gui.dot import DotView, FlickDotView, PressDotView
+from wintoucher.data.dot import Dot, FlickDot, PinchDot, PressDot, RotateDot
+from wintoucher.gui.dot import DotView, FlickDotView, PinchDotView, PressDotView, RotateDotView
 from wintoucher.util.key import Key
 
 
@@ -20,11 +20,15 @@ class Dots:
     TYPES: ClassVar[Dict[str, Type[Dot]]] = {
         "Press": PressDot,
         "Flick": FlickDot,
+        "Pinch": PinchDot,
+        "Rotate": RotateDot,
     }
 
     VIEW_TYPES: ClassVar[Dict[Type[Dot], Type[DotView]]] = {
         PressDot: PressDotView,
         FlickDot: FlickDotView,
+        PinchDot: PinchDotView,
+        RotateDot: RotateDotView,
     }
 
     @property
@@ -92,7 +96,25 @@ class Dots:
         view = self.VIEW_TYPES[type(dot)](dot)
         self.views[dot.id] = view
 
-    def add(self, type: str, x: int, y: int):
+    def _get_used_ids(self):
+        used = set()
+        for dot in self.dots:
+            if dot is not None:
+                used.add(dot.id)
+                if hasattr(dot, "id2") and dot.id2 >= 0:
+                    used.add(dot.id2)
+        return used
+
+    def _find_free_id(self, exclude=None):
+        used = self._get_used_ids()
+        if exclude:
+            used |= exclude
+        for i in range(256):
+            if i not in used:
+                return i
+        return -1
+
+    def add(self, type: str, x: int, y: int, mode: str = "overlay"):
         """
         Add a dot of the given type at the given coordinates.
         """
@@ -100,14 +122,19 @@ class Dots:
             raise ValueError(f"Invalid dot type: {type}")
 
         dot_type = self.TYPES[type]
+        next_id = self._find_free_id()
+        if next_id < 0:
+            return
 
-        next_id = 0
-        for dot in self.dots:
-            if dot is None:
-                break
-            next_id += 1
+        needs_two = dot_type in (PinchDot, RotateDot)
+        if needs_two:
+            id2 = self._find_free_id(exclude={next_id})
+            if id2 < 0:
+                return
+            new_dot = dot_type(id=next_id, x=x, y=y, key=None, mode=mode, id2=id2)
+        else:
+            new_dot = dot_type(id=next_id, x=x, y=y, key=None, mode=mode)
 
-        new_dot = dot_type(id=next_id, x=x, y=y, key=None)
         self.dots.append(new_dot)
         self.last_operated_dot = new_dot
         self.add_view(new_dot)

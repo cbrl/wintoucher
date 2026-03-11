@@ -9,8 +9,8 @@ from pynput.keyboard import Key as SpecialKey
 from pynput.keyboard import KeyCode, Listener
 
 from wintoucher.controller.dots import Dots
-from wintoucher.data.dot import FlickDot, PressDot
-from wintoucher.gui.dot import FlickDotView
+from wintoucher.data.dot import FlickDot, PinchDot, PressDot, RotateDot
+from wintoucher.gui.dot import FlickDotView, PinchDotView, RotateDotView
 from wintoucher.gui.overlay import Overlay
 from wintoucher.gui.tkutils import (
     WITHDRAWN,
@@ -22,8 +22,8 @@ from wintoucher.gui.tkutils import (
 )
 from wintoucher.gui.tray import TrayIcon
 from wintoucher.util.json import JSONSerializableManager
-from wintoucher.util.key import Key, is_special_key, is_valid_key
-from wintoucher.util.touch import MAX_TOUCHES, TouchError, TouchManager
+from wintoucher.util.key import Key, is_special_key, is_valid_key, key_to_str
+from wintoucher.util.touch import MAX_TOUCHES, TouchError, TouchManager, get_cursor_pos
 
 
 class WintoucherApp:
@@ -44,8 +44,8 @@ class WintoucherApp:
     json_encoder: Type[JSONEncoder]
     json_decoder: Type[JSONDecoder]
 
-    APP_WIDTH = 450
-    APP_HEIGHT = 375
+    APP_WIDTH = 520
+    APP_HEIGHT = 650
     APP_NAME = "WinToucher"
     APP_VERSION = "v0.1.0"
     APP_ICO_NAME = "WinToucher.ico"
@@ -57,7 +57,6 @@ class WintoucherApp:
         self.root.title(f"Control Panel - {APP_NAME_WITH_VERSION}")
 
         self.root.geometry(f"{self.APP_WIDTH}x{self.APP_HEIGHT}")
-        self.root.maxsize(self.APP_WIDTH, self.APP_HEIGHT)
         self.root.minsize(self.APP_WIDTH, self.APP_HEIGHT)
         self.root.iconbitmap(self.APP_ICO_NAME)
         self.root.attributes("-topmost", True)
@@ -82,6 +81,8 @@ class WintoucherApp:
         json_manager.register(Dots)
         json_manager.register(PressDot)
         json_manager.register(FlickDot)
+        json_manager.register(PinchDot)
+        json_manager.register(RotateDot)
         json_manager.register_special(SpecialKey, ("name",))
         json_manager.add_decoder(SpecialKey, lambda obj: SpecialKey[obj["name"]])
         json_manager.register_special(KeyCode, ("vk", "char", "is_dead"))
@@ -140,27 +141,83 @@ class WintoucherApp:
         )
         grid_widget(self.load_button, 1, 1)
 
-        # Dots Control
-        self.dots_frame = create_frame(self.root, "Dots Control")
-        grid_widget(self.dots_frame, 1, 0, padx=10, pady=5)
+        # Bindings Frame
+        self.bindings_frame = create_frame(self.root, "Bindings", cols=4)
+        grid_widget(self.bindings_frame, 1, 0, sticky="nsew", padx=10, pady=5)
+        self.root.grid_rowconfigure(1, weight=1)
 
-        self.new_dot_type_label = ttk.Label(self.dots_frame, text="New Dot Type")
-        grid_widget(self.new_dot_type_label, 0, 0)
+        columns = ("id", "type", "mode", "key", "params")
+        self.bindings_tree = ttk.Treeview(
+            self.bindings_frame, columns=columns, show="headings",
+            height=6, selectmode="browse",
+        )
+        self.bindings_tree.heading("id", text="#")
+        self.bindings_tree.heading("type", text="Type")
+        self.bindings_tree.heading("mode", text="Mode")
+        self.bindings_tree.heading("key", text="Key")
+        self.bindings_tree.heading("params", text="Parameters")
+        self.bindings_tree.column("id", width=30, stretch=False)
+        self.bindings_tree.column("type", width=55, stretch=False)
+        self.bindings_tree.column("mode", width=55, stretch=False)
+        self.bindings_tree.column("key", width=55, stretch=False)
+        self.bindings_tree.column("params", width=200)
+        self.bindings_tree.grid(
+            row=0, column=0, columnspan=4, sticky="nsew", padx=5, pady=2,
+        )
+        self.bindings_frame.grid_rowconfigure(0, weight=1)
+        self.bindings_tree.bind("<<TreeviewSelect>>", self._on_binding_select)
 
+        tree_scroll = ttk.Scrollbar(
+            self.bindings_frame, orient=tk.VERTICAL,
+            command=self.bindings_tree.yview,
+        )
+        self.bindings_tree.configure(yscrollcommand=tree_scroll.set)
+        tree_scroll.grid(row=0, column=4, sticky="ns")
+
+        ttk.Label(self.bindings_frame, text="Type:").grid(row=1, column=0, padx=2)
         self.new_dot_type_combobox = ttk.Combobox(
-            self.dots_frame,
+            self.bindings_frame,
             textvariable=self.overlay.new_dot_type,
             values=list(Dots.TYPES.keys()),
             state="readonly",
-            width=5,
+            width=7,
         )
         self.new_dot_type_combobox.current(0)
-        grid_widget(self.new_dot_type_combobox, 0, 1)
+        self.new_dot_type_combobox.grid(row=1, column=1, padx=2)
+
+        self.new_dot_mode = tk.StringVar(value="overlay")
+        ttk.Label(self.bindings_frame, text="Mode:").grid(row=1, column=2, padx=2)
+        self.new_dot_mode_combobox = ttk.Combobox(
+            self.bindings_frame,
+            textvariable=self.new_dot_mode,
+            values=["overlay", "cursor"],
+            state="readonly",
+            width=7,
+        )
+        self.new_dot_mode_combobox.current(0)
+        self.new_dot_mode_combobox.grid(row=1, column=3, padx=2)
+
+        self.add_binding_btn = create_button(
+            self.bindings_frame, "Add Binding", self._add_binding,
+        )
+        self.add_binding_btn.grid(
+            row=2, column=0, columnspan=2, sticky="ew", padx=5, pady=2,
+        )
+        self.delete_binding_btn = create_button(
+            self.bindings_frame, "Delete Binding", self._delete_binding,
+        )
+        self.delete_binding_btn.grid(
+            row=2, column=2, columnspan=2, sticky="ew", padx=5, pady=2,
+        )
 
         # Dot Frame
-        self.dot_frame = create_frame(self.root, "Dot Detail")
+        self.dot_frame = create_frame(self.root, "Binding Detail")
         grid_widget(self.dot_frame, 2, 0, sticky="nsew", padx=10, pady=5)
         self.root.grid_rowconfigure(2, weight=1)
+
+        # Key assignment state
+        self._assigning_key = False
+        self._key_target_dot = None
 
         # Touch
         self.touch_manager = TouchManager(MAX_TOUCHES)
@@ -248,6 +305,7 @@ class WintoucherApp:
             )
             self.overlay.dots = self.dots
             self.overlay.update()
+            self._refresh_bindings_list()
 
     def toggle_listen(self, notify: bool = False):
         listen_text = "resume" if self.keyboard_listening else "pause"
@@ -260,38 +318,61 @@ class WintoucherApp:
         self.keyboard_listening = not self.keyboard_listening
 
     def keyboard_handlers(self):
-        def prehandler(func: Callable[[Key], None]):
-            def wrapped(key: Key, *args, **kwargs):
+        def prehandler(func: Callable[[Key, bool], None]):
+            def wrapped(key: Key, injected: bool):
                 if not is_special_key(key):
                     key = self.keyboard.canonical(key)
 
                 if self.keyboard_listening:
-                    func(key, *args, **kwargs)
+                    func(key, injected)
 
             return wrapped
 
         @prehandler
-        def on_press(key: Key):
+        def on_press(key: Key, injected: bool):
             if key == SpecialKey.esc:
                 self.toggle_listen()
+                return
+
+            # Handle key assignment mode
+            if self._assigning_key and self._key_target_dot and is_valid_key(key):
+                self._key_target_dot.key = key
+                self._assigning_key = False
+                self._key_target_dot = None
+                self.root.after(0, self._refresh_after_key_assign)
                 return
 
             if self.overlay.state() == WITHDRAWN:
                 # Inject touch
                 if self.keyboard_listening and is_valid_key(key):
                     for dot in self.dots.get_dots_by_key(key):
+                        if dot.mode == "cursor":
+                            px, py = get_cursor_pos()
+                        else:
+                            px, py = dot.x, dot.y
+
                         if isinstance(dot, PressDot):
-                            self.touch_manager.press(dot.id, dot.x, dot.y)
+                            self.touch_manager.press(dot.id, px, py)
                         elif isinstance(dot, FlickDot):
                             view = self.dots.get_view_by_dot(dot)
                             assert isinstance(view, FlickDotView)
-                            view.run(self.touch_manager)
+                            view.run(self.touch_manager, px, py)
+                        elif isinstance(dot, PinchDot):
+                            view = self.dots.get_view_by_dot(dot)
+                            assert isinstance(view, PinchDotView)
+                            view.run(self.touch_manager, px, py)
+                        elif isinstance(dot, RotateDot):
+                            view = self.dots.get_view_by_dot(dot)
+                            assert isinstance(view, RotateDotView)
+                            view.run(self.touch_manager, px, py)
 
         @prehandler
-        def on_release(key: Key):
+        def on_release(key: Key, injected: bool):
             if self.overlay.state() == WITHDRAWN:
                 for dot in self.dots.get_dots_by_key(key):
                     self.touch_manager.up(dot.id)
+                    if isinstance(dot, (PinchDot, RotateDot)):
+                        self.touch_manager.up(dot.id2)
             else:
                 # Assign key to dot
                 if self.dots and is_valid_key(key):
@@ -310,11 +391,11 @@ class WintoucherApp:
         if self.overlay.state() == WITHDRAWN:
             self.overlay.show()
             toggle_state(self.dot_frame)
-            toggle_state(self.dots_frame)
+            toggle_state(self.bindings_frame)
         else:
             self.overlay.hide()
             toggle_state(self.dot_frame, "disabled")
-            toggle_state(self.dots_frame, "disabled")
+            toggle_state(self.bindings_frame, "disabled")
 
     def touch(self):
         if self.overlay.state() == WITHDRAWN:
@@ -329,9 +410,142 @@ class WintoucherApp:
     def update_dot_detail(self):
         for widget in self.dot_frame.winfo_children():
             widget.destroy()
-        if self.dots.current_viewed_dot:
-            view = self.dots.get_view_by_dot(self.dots.current_viewed_dot)
-            create_details(self.dot_frame, view.detail(self.overlay.draw_dots))
+        if not getattr(self, "_in_selection_handler", False):
+            self._refresh_bindings_list()
+        dot = self.dots.current_viewed_dot
+        if dot:
+            view = self.dots.get_view_by_dot(dot)
+            details = view.detail(self.overlay.draw_dots)
+            create_details(self.dot_frame, details)
+
+            row = len(details)
+
+            # Set Key button
+            key_text = key_to_str(dot.key) if dot.key else "(none)"
+            assign_label = "Press key..." if self._assigning_key else f"Set Key: {key_text}"
+            key_btn = ttk.Button(
+                self.dot_frame, text=assign_label,
+                command=lambda: self._start_key_assignment(dot),
+            )
+            key_btn.grid(row=row, column=0, columnspan=2, sticky="ew", padx=5, pady=2)
+            row += 1
+
+            # Position editing for overlay mode
+            if dot.mode == "overlay":
+                self._x_var = tk.IntVar(value=dot.x)
+                self._y_var = tk.IntVar(value=dot.y)
+
+                ttk.Label(self.dot_frame, text="X").grid(row=row, column=0, padx=5)
+                x_spin = ttk.Spinbox(
+                    self.dot_frame, from_=0, to=9999,
+                    textvariable=self._x_var, width=8,
+                    command=lambda: self._update_dot_position(dot),
+                )
+                x_spin.grid(row=row, column=1, sticky="ew", padx=5)
+                row += 1
+
+                ttk.Label(self.dot_frame, text="Y").grid(row=row, column=0, padx=5)
+                y_spin = ttk.Spinbox(
+                    self.dot_frame, from_=0, to=9999,
+                    textvariable=self._y_var, width=8,
+                    command=lambda: self._update_dot_position(dot),
+                )
+                y_spin.grid(row=row, column=1, sticky="ew", padx=5)
+
+    def _start_key_assignment(self, dot):
+        self._assigning_key = True
+        self._key_target_dot = dot
+        self.update_dot_detail()
+
+    def _refresh_after_key_assign(self):
+        self.update_dot_detail()
+        self._refresh_bindings_list()
+        self.overlay.draw_dots()
+
+    def _update_dot_position(self, dot):
+        dot.x = self._x_var.get()
+        dot.y = self._y_var.get()
+        self.overlay.draw_dots()
+        self._refresh_bindings_list()
+
+    def _get_dot_params_str(self, dot):
+        if isinstance(dot, RotateDot):
+            return f"angle={dot.rotation_angle.get()}\u00b0, r={dot.radius.get()}"
+        if isinstance(dot, PinchDot):
+            return f"from={dot.start_distance.get()}, to={dot.end_distance.get()}"
+        if isinstance(dot, FlickDot):
+            return f"angle={dot.angle.get()}\u00b0, dist={dot.distance.get()}"
+        if isinstance(dot, PressDot) and dot.mode == "overlay":
+            return f"({dot.x}, {dot.y})"
+        return ""
+
+    def _refresh_bindings_list(self):
+        if not hasattr(self, "bindings_tree"):
+            return
+        self._refreshing_bindings = True
+        current_dot = self.dots.current_viewed_dot
+        for item in self.bindings_tree.get_children():
+            self.bindings_tree.delete(item)
+        for dot in self.dots:
+            type_name = dot.__class__.__name__.replace("Dot", "")
+            params = self._get_dot_params_str(dot)
+            self.bindings_tree.insert(
+                "", "end", iid=str(dot.id),
+                values=(dot.id, type_name, dot.mode.capitalize(), key_to_str(dot.key), params),
+            )
+        if current_dot and self.bindings_tree.exists(str(current_dot.id)):
+            self.bindings_tree.selection_set(str(current_dot.id))
+        self._refreshing_bindings = False
+
+    def _on_binding_select(self, event=None):
+        if getattr(self, "_refreshing_bindings", False):
+            return
+        selection = self.bindings_tree.selection()
+        if not selection:
+            return
+        try:
+            dot_id = int(self.bindings_tree.item(selection[0])["values"][0])
+        except (ValueError, IndexError):
+            return
+        for dot in self.dots:
+            if dot.id == dot_id:
+                self.dots.current_viewed_dot = dot
+                self._in_selection_handler = True
+                self.update_dot_detail()
+                self._in_selection_handler = False
+                break
+
+    def _add_binding(self):
+        if len(self.dots) >= MAX_TOUCHES:
+            messagebox.showinfo("Add Binding", "Maximum number of bindings reached.")
+            return
+
+        dot_type = self.overlay.new_dot_type.get()
+        mode = self.new_dot_mode.get()
+
+        if mode == "cursor":
+            self.dots.add(dot_type, 0, 0, mode=mode)
+        else:
+            screen_w = self.root.winfo_screenwidth()
+            screen_h = self.root.winfo_screenheight()
+            self.dots.add(dot_type, screen_w // 2, screen_h // 2, mode=mode)
+
+        self._refresh_bindings_list()
+        self.overlay.draw_dots()
+
+    def _delete_binding(self):
+        selection = self.bindings_tree.selection()
+        if not selection:
+            return
+        dot_id = int(self.bindings_tree.item(selection[0])["values"][0])
+        for dot in self.dots:
+            if dot.id == dot_id:
+                self.dots.remove(dot)
+                break
+        self.dots.current_viewed_dot = None
+        self.update_dot_detail()
+        self._refresh_bindings_list()
+        self.overlay.draw_dots()
 
     def run(self):
         self.root.mainloop()

@@ -133,10 +133,13 @@ def toggle_widget(
         state (Optional[Literal["normal", "disabled", "readonly"]], optional): The state to set the widget to. Defaults to `None`.
     """
 
-    if state is None:
-        state = getattr(widget, "old_state", "normal")
-    setattr(widget, "old_state", widget["state"])
-    widget.configure(state=state)  # type: ignore
+    try:
+        if state is None:
+            state = getattr(widget, "old_state", "normal")
+        setattr(widget, "old_state", widget["state"])
+        widget.configure(state=state)  # type: ignore
+    except tk.TclError:
+        pass
 
 
 def toggle_state(

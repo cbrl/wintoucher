@@ -149,5 +149,7 @@ class Overlay(tk.Toplevel):
 
         self.canvas.delete("all")
         for dot in self.dots:
+            if dot.mode == "cursor":
+                continue
             view = self.dots.get_view_by_dot(dot)
             view.draw(self.canvas, outlined=(dot == self.dots.current_viewed_dot))

@@ -65,6 +65,13 @@ PRESSURE = 32000
 DELAY = 0.05
 
 
+def get_cursor_pos():
+    """Get the current cursor position using Win32 API."""
+    point = POINT()
+    windll.user32.GetCursorPos(byref(point))
+    return point.x, point.y
+
+
 def structure(cls: Type):
     """
     Decorator to generate `_fields_` attribute for dataclasses.
